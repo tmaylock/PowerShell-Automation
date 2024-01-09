@@ -1,0 +1,13 @@
+{
+    "search.exclude": {
+        "Binaries/*": true
+    },
+    "search.useIgnoreFiles": false,
+    "editor.tabCompletion": "on",
+    "files.defaultLanguage": "powershell",
+    "powershell.codeFormatting.autoCorrectAliases": true,
+    "powershell.codeFormatting.useCorrectCasing": true,
+    "powershell.codeFormatting.useConstantStrings": true,
+    "powershell.codeFormatting.whitespaceBetweenParameters": true,
+    "powershell.codeFormatting.trimWhitespaceAroundPipe": true
+}
