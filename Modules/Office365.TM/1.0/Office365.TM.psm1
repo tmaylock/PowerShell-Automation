@@ -784,7 +784,6 @@ Function Invoke-O365ScheduledFunction {
     
             Write-Output 'Get-Office365LicenseSKU'; Get-Office365LicenseSKU
             Write-Output 'Get-Office365LicenseTotals'; Get-Office365LicenseTotals
-            Write-Output 'Set-PmGblOffice365LicensedUsers'; Set-PmGblOffice365LicensedUsers
             Write-Output 'Get-Office365AuditLog'; Get-Office365AuditLog
             Write-Output 'Get-O365Mailboxes'; Get-O365Mailboxes
             Write-Output 'Get-O365SharedMailboxPermissions'; Get-O365SharedMailboxPermissions
