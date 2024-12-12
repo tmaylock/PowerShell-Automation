@@ -12,7 +12,7 @@ A collection of PowerShell modules for extracting data from various sources.
  
 ## Automating the Process
 - Secret Store
-  - Comment the "Microsoft.PowerShell.SecretStore" module out of "RequiredModules" to make it easier to run manually.
+  - Comment the "Microsoft.PowerShell.SecretStore" module out of "RequiredModules" to make it easier to run manually and troubleshoot.
   - Read the notes under the "Get-SecretFromVault" function.
   - Consider replacing this with [Azure Key Vault](https://learn.microsoft.com/en-us/azure/key-vault/secrets/quick-create-powershell), it's much easier to use and more portable.
 - Create 3 scheduled tasks set to run as the user with granted permissions, run whether or not the user is logged on or not, with the highest privileges.
