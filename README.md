@@ -11,6 +11,10 @@ A collection of PowerShell modules for extracting data from various sources.
   - Switches Module: SharpSnmpLib for SNMP communication (download from [here](https://www.nuget.org/api/v2/package/Lextm.SharpSnmpLib/12.5.2) and use SharpSnmpLib.dll from the folder "lib\netstandard2.0")
  
 ## Automating the Process
+- Secret Store
+  - Comment the "Microsoft.PowerShell.SecretStore" module out of "RequiredModules" to make it easier to run manually.
+  - Read the notes under the "Get-SecretFromVault" function.
+  - Consider replacing this with [Azure Key Vault](https://learn.microsoft.com/en-us/azure/key-vault/secrets/quick-create-powershell), it's much easier to use and more portable.
 - Create 3 scheduled tasks set to run as the user with granted permissions, run whether or not the user is logged on or not, with the highest privileges.
   - Scheduler.ps1 -Schedule '15Minute'
   - Scheduler.ps1 -Schedule 'Hourly'
@@ -19,9 +23,6 @@ A collection of PowerShell modules for extracting data from various sources.
   - This module runs all the PS Thread Jobs for the modules. Uncomment each "Start-ThreadJob" to start using them.
 - Variables
   - Configure the variables at the end of "SharedFunctions.TM.psm1"
-- Secret Store
-  - Read the notes under the "Get-SecretFromVault" function.
-  - Consider replacing this with [Azure Key Vault](https://learn.microsoft.com/en-us/azure/key-vault/secrets/quick-create-powershell), it's much easier to use and more portable.
 - Postgresql
   - Tested with version 15 of postgres (should work with 16).
   - Optionally (but highly recommended) install [TimescaleDB extension](https://docs.timescale.com/self-hosted/latest/install/)
