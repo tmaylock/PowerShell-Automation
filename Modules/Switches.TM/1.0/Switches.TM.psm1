@@ -295,6 +295,38 @@ function ConvertFrom-EntityClass {
 }
 
 Function Get-SwitchSNMPData {
+    <#
+    .SYNOPSIS
+        Retrieves SNMP data from a switch and writes it to a Postgresql table. Tested only on Cisco switches but should be flexible enough to work with other vendors.
+    .DESCRIPTION
+       Requires an IP and community string. 
+    .NOTES
+        This function does a basic check of the sysDescr oid (1.3.6.1.2.1.1.1.0) to make sure the device can be reached before attempting to pull more data.
+
+        Use -DebugScan $true for seeing what data gets returned. You can also view the input object that would get written to the DB (use this for adding a table with Add-PgSQLTable)
+    .EXAMPLE
+        Get-SwitchSNMPData -DataType All -IP 192.168.1.1 -Community 'public'
+
+    .EXAMPLE
+        For Example, if the table doesn't exist
+        $test = Get-SwitchSNMPData -DataType 'Port - Descriptions' -IP 192.168.1.1 -Community 'public' -DebugScan $true
+        $test.Exception
+
+        System.Management.Automation.MethodInvocationException: Exception calling "Fill" with "1" argument(s): "ERROR [42P01] ERROR: relation "switches.portdescriptions" does not exist;
+
+        Create the table:
+        Add-PGSQLTable -InputObject $test.inputobject -Table portdescriptions -Schema switches -PrimaryKeys @("ifindex","ip") -GrantReadOnly -ReadOnlyGroup "readonly"
+
+        CREATE TABLE switches.portdescriptions
+(
+data text, ifindex integer NOT NULL, ip inet NOT NULL,
+CONSTRAINT portdescriptions_pkey PRIMARY KEY (ifindex,ip)
+)
+switches.portdescriptions - Created Successfully
+switches.portdescriptions - Granted Select to readonly
+    #>
+    
+    
     [CmdletBinding()]
     param (
         [Parameter(Mandatory = $True)]
@@ -408,7 +440,7 @@ Function Get-SwitchSNMPData {
     else { $DataScans = $DataType }
     
     try {
-        $check = (Get-SnmpData -IP $ip -OID '1.3.6.1.2.1.1.1.0' -Community 'snmp_community' -Version V2 -TimeOut 5000 -ErrorAction SilentlyContinue).data
+        $check = (Get-SnmpData -IP $ip -OID '1.3.6.1.2.1.1.1.0' -Community $community -Version V2 -TimeOut 5000 -ErrorAction SilentlyContinue).data
     }
     catch {
         $status = 'Check Failed'
@@ -423,7 +455,7 @@ Function Get-SwitchSNMPData {
             @{name = 'ifindex'; expression = { ($_.oid).split('.')[-2] } },
             @{name = 'neighborindex'; expression = { ($_.oid).split('.')[-1] } },
             @{name = 'data'; expression = { '{' + ((ConvertFrom-CDPCapabilityBits -CapabilitiesHex $_.data) -join ',') + '}' } },
-            @{name = 'ip'; expression = { "$IP" } }  
+            @{name = 'ip'; expression = { [ipaddress]"$IP" } }  
         )
         
     
@@ -431,65 +463,65 @@ Function Get-SwitchSNMPData {
             @{name = 'ifindex'; expression = { ($_.oid).split('.')[-2] } },
             @{name = 'neighborindex'; expression = { ($_.oid).split('.')[-1] } },
             @{name = 'data'; expression = { ConvertFrom-CDPIPHex -IPHEX $_.data } }, 
-            @{name = 'ip'; expression = { "$IP" } } 
+            @{name = 'ip'; expression = { [ipaddress]"$IP" } } 
         )
     
         $CDPDefaultProperties = @(
             @{name = 'ifindex'; expression = { ($_.oid).split('.')[-2] } },
             @{name = 'neighborindex'; expression = { ($_.oid).split('.')[-1] } },
             'data', 
-            @{name = 'ip'; expression = { "$IP" } } 
+            @{name = 'ip'; expression = { [ipaddress]"$IP" } } 
         )
     
         $IPIndexProperties = @(
             @{name = 'ifindex'; expression = { $_.data } }, 
             @{name = 'data'; expression = { $_.OID.Replace("$($SNMPMappings.item("$DataType").OID).", '') } }, 
-            @{name = 'ip'; expression = { "$IP" } } 
+            @{name = 'ip'; expression = { [ipaddress]"$IP" } } 
         )
     
     
         $IPNetMaskProperties = @(
             @{name = 'ifindex'; expression = { $_.OID.Replace("$($SNMPMappings.item("$DataType").OID).", '') } }, 
             'data', 
-            @{name = 'ip'; expression = { "$IP" } } 
+            @{name = 'ip'; expression = { [ipaddress]"$IP" } } 
         )
     
         $PortDefaultProperties = @(
             @{name = 'ifindex'; expression = { $_.OID.Split('.')[-1] } }, 
             'data', 
-            @{name = 'ip'; expression = { "$IP" } } 
+            @{name = 'ip'; expression = { [ipaddress]"$IP" } } 
         )
     
         $LLDPProperties = @(
             @{name = 'ifindex'; expression = { ($_.oid).split('.')[-2] } },
             @{name = 'neighborindex'; expression = { ($_.oid).split('.')[-1] } },
             @{Name = 'data'; Expression = { if ($_.data -match '.*\?.*') { [String]::Join('', ([System.Text.Encoding]::ASCII.GetBytes($_.data) | ForEach-Object { '{0:X2}' -f $_ })) } else { $_.data -replace '[^\x21-\x7e]+', '' } } }, 
-            @{name = 'ip'; expression = { "$IP" } } 
+            @{name = 'ip'; expression = { [ipaddress]"$IP" } } 
         )
     
         $LLDPHexProperties = @(
             @{name = 'ifindex'; expression = { ($_.oid).split('.')[-2] } },
             @{name = 'neighborindex'; expression = { ($_.oid).split('.')[-1] } },    
             @{name = 'data'; expression = { '{' + ((ConvertFrom-LLDPCapability -ClientIntentValue ('0x' + $_.data.SubString(0, 2))) -join ',') + '}' } }, 
-            @{name = 'ip'; expression = { "$IP" } } 
+            @{name = 'ip'; expression = { [ipaddress]"$IP" } } 
         )
             
         $entPhysicalClassProperties = @(
             @{name = 'ifindex'; expression = { $_.OID.Split('.')[-1] } }, 
             @{name = 'data'; expression = { ConvertFrom-EntityClass -entityclass $_.data } }, 
-            @{name = 'ip'; expression = { "$IP" } } 
+            @{name = 'ip'; expression = { [ipaddress]"$IP" } } 
         )
     
         $entAliasMappingIdentifierProperties = @(
             @{name = 'ifindex'; expression = { ($_.oid).split('.')[-2] } },
             @{Name = 'data'; Expression = { $_.data.split('.')[-1] } } , 
-            @{name = 'ip'; expression = { "$IP" } } 
+            @{name = 'ip'; expression = { [ipaddress]"$IP" } } 
         )
     
         $VLANDefaultProperties = @(
             @{name = 'vlanindex'; expression = { $_.OID.Split('.')[-1] } }, 
             'data', 
-            @{name = 'ip'; expression = { "$IP" } } 
+            @{name = 'ip'; expression = { [ipaddress]"$IP" } } 
         )
     
     
@@ -820,7 +852,7 @@ SELECT distinct(hostname)
 
 Function Get-SwitchInfoCSV {
 
-    $csv = Import-Csv -Path E:\PowerShell\Inbox\Ansible_Export\all_cisco_switch_ios_information.csv
+    $csv = Import-Csv -Path $pwd\Inbox\Ansible_Export\all_cisco_switch_ios_information.csv
 
     $properties = @(
         @{name = 'hostname'; expression = { $_.hostname } },
@@ -992,19 +1024,3 @@ Function Invoke-SwitchesScheduledFunction {
     }
 
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
