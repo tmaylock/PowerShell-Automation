@@ -381,7 +381,7 @@ Function Get-VariableSizes {
 }
 $global:mycompany = 'mycompanyname'
 $global:domain_controller = 'server'
-$global:ad_domain = 'MYDOMAIN' #caps for postgres queries
+$global:ad_domain = 'MYDOMAIN' #caps for case sensitive postgres queries
 $global:commvault_commserve = 'server'
 $global:sccm_site = 'ABC'
 $global:sccm_server = 'sccmserver'
