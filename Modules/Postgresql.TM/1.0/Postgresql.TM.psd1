@@ -74,7 +74,6 @@
         "Disconnect-PGSQLServer",
         "Invoke-PGSQLSelect",
         "Set-PGSQLInsert",
-        "Set-PGSQLInsert2",
         "Invoke-PGSQLTruncate",
         "Set-PGSQLTruncate",
         "Invoke-PGSQLInsert",
@@ -83,7 +82,8 @@
         "Write-PGSQLLog",
         "Get-PGSQLInsertLog",
         "Get-PGSQLTableDefinitions",
-        "Invoke-PGSqlQuery"
+        "Invoke-PGSqlQuery",
+        "Test-PGODBCDriver"
     )
 
     # Cmdlets to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no cmdlets to export.
