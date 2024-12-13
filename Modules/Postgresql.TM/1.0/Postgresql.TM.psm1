@@ -73,47 +73,95 @@ $sqlkeywords = @(
     'WHEN',
     'WHERE'
 )
-#pgsql odbc driver - https://ftp.postgresql.org/pub/odbc/versions/msi/psqlodbc_15_00_0000-x64.zip
-$tabledefinitions = Get-PGSQLTableDefinitions
+
+Function Test-PGODBCDriver {
+    <#
+    .SYNOPSIS
+        Checks to see if the PostgreSQL ODBC Driver is installed
+    .DESCRIPTION
+        Generates a terminating error if the PostgreSQL ODBC Driver can not be found. Only has to run this check once per session.
+    #>
+    
+    if ($PostgreSQLODBCDriverPresent -ne $true) {
+
+        if ($null -eq (Get-OdbcDriver -Name *PostgreSQL*)) {
+            throw 'PostgreSQL ODBC Driver not found, install latest release from https://www.postgresql.org/ftp/odbc/releases/'
+        }
+        else {
+            $global:PostgreSQLODBCDriverPresent = $true
+        }
+    }
+}
+
+
 
 Function Get-PGSQLTableDefinitions {
 
-    $query = @'
+    <#
+    .SYNOPSIS
+        Retrieves all column information from DB
+    .DESCRIPTION
+        Stores all table schemas, table names, column names, and column data types for quick retrieval. Module must be forcibly imported to update the table definitions variable.
+    .NOTES
+        This function exists to reduce the amount of queries done against the DB. By storing the table definitions in a variable, we can reference this in memory instead of querying the DB before each insert.
+    #>
+    if ($null -eq $tabledefinitions) {
+
+        $query = @'
     SELECT table_schema,table_name,column_name,data_type,is_nullable
     FROM information_schema.columns
     where table_schema not like '%timescaledb_%'
     and table_schema not in ('information_schema','pg_catalog')
 '@
+        [System.Data.Odbc.OdbcCommand]$pgsqlcmd = New-Object System.Data.Odbc.OdbcCommand($query, $PgSqlConnection)
+        [System.Data.Odbc.odbcDataAdapter]$pgsqlda = New-Object system.Data.odbc.odbcDataAdapter($pgsqlcmd)    
+        $pgsqlds = [System.Data.DataSet]::new()
+        $pgsqlda.Fill($pgsqlds) | Out-Null
+
+        $global:tabledefinitions = $pgsqlds.Tables.ForEach{ $_ }
+
+        $pgsqlcmd.Dispose()
+        $pgsqlda.Dispose()
+        $pgsqlds.Dispose()
     
-    $tabledefinitions = Invoke-PGSQLSelect -Query $query
-    
-    return $tabledefinitions
-    
+    }
 }
+
 Function Connect-PGSQLServer {
+
+    begin {
+        Test-PGODBCDriver
+    }
+    process {
   
-    try {
-        if ($null -eq $PgSqlConnection) {
-            $pgsqlUser = 'postgres_user'
-            $pgsqlPass = Get-SecretFromVault -Vault $global:Vault -Name $pgsqlUser
-            $pgsqldbName = 'dbname'
-            $pgsqlServer = 'pgsqlserver'
-            $port = 5432
-            $PgSqlConnection = New-Object System.Data.Odbc.OdbcConnection
-            $PgSqlConnection.ConnectionString = "Driver={PostgreSQL Unicode(x64)};Server=$pgsqlServer;Port=$Port;Database=$pgsqldbName;Uid=$pgsqlUser;Pwd=$pgsqlPass;Pooling=true;"
-            $PgSqlConnection.ConnectionTimeout = 60
-            $PgSqlConnection.Open()
-            $global:PgSqlConnection = $PgSqlConnection
+        try {
+            if ($null -eq $PgSqlConnection) {
+                $pgsqlUser = 'postgres_user'
+                $pgsqlPass = Get-SecretFromVault -Vault $global:Vault -Name $pgsqlUser
+                $pgsqldbName = 'dbname'
+                $pgsqlServer = 'pgsqlserver'
+                $port = 5432
+                $PgSqlConnection = New-Object System.Data.Odbc.OdbcConnection
+                $PgSqlConnection.ConnectionString = "Driver={PostgreSQL Unicode(x64)};Server=$pgsqlServer;Port=$Port;Database=$pgsqldbName;Uid=$pgsqlUser;Pwd=$pgsqlPass;Pooling=true;"
+                $PgSqlConnection.ConnectionTimeout = 60
+                $PgSqlConnection.Open()
+                $global:PgSqlConnection = $PgSqlConnection
+            }
+            elseif ( $PgSqlConnection.State -eq 'Closed') {
+                $PgSqlConnection.Open()
+            }
+            
+            Get-PGSQLTableDefinitions
+            
         }
-        elseif ( $PgSqlConnection.State -eq 'Closed') {
-            $PgSqlConnection.Open()
+        catch {
+            $ip = (Get-NetIPAddress | Where-Object { $_.InterfaceIndex -in ((Get-NetAdapter | Where-Object { $_.status -eq 'Up' }).ifindex) -and $_.AddressFamily -eq 'IPv4' }).IPAddress
+            Write-Error "Postgresql Connection Failed. If necessary, make sure your Postgresql server is listening on non-local ports and your pg_hba.conf has been modified accordingly. You may need an entry such as 'host all all $ip/32 trust'"
+            throw $_.exception
         }
-    }
-    catch {
-        Write-Error $_.exception
-    }
-    finally {
+        finally {
         
+        }
     }
 }
 
@@ -150,7 +198,9 @@ Function Invoke-PGSQLSelect {
             return $pgsqldt
         }
         catch {
-            Write-Error $_
+            # uncomment the line below and comment out the throw if you don't want select statements to kill the whole script
+            #Write-Error $_
+            throw $_.exception
         }
     }
     end {
@@ -163,6 +213,25 @@ Function Invoke-PGSQLSelect {
 
 
 Function Set-PGSQLInsert {
+    <#
+    .SYNOPSIS
+        Builds a Postgresql insert query statement
+    .DESCRIPTION
+        Used by the "Invoke-PGSQLInsert" function, this function builds the entire insert query statement and creates a single large insert statement instead of multiple single inserts.
+    .NOTES
+        This function has multiple functionalities:
+            - Queries the DB to try and best-match the columns in your $InputObject variable. This allows you to not specify object properties while only inserting properties(columns) that already exist in the table.
+            - Normalizes property names (removes certain special characters and changes the case to lower)
+            - Identifies primary keys for use with "ON CONFLICT" and "DO UPDATE SET" (for updating data without truncating the table)
+            - Automatically replaces single quotes with double single quotes
+            - Handles null values (and weird stuff like [dbnull]) by always converting all values to a string with [string]$member.value 
+            - Automatically wraps Postgresql key words with double quotes
+            - Automatically wraps schema names with double quotes in case of upper case characters
+    .EXAMPLE
+        Set-PGSQLInsert -InputObject $InputObject -OnConflict 'Set Excluded' -Schema activedirectory -Table computers
+    #>
+    
+    
     [CmdletBinding()]
     param (
         [Parameter(Mandatory = $true)]
@@ -191,9 +260,9 @@ Function Set-PGSQLInsert {
         @{name = 'Property'; expression = { $_.name.trim().tolower() -replace '(\(|\)|\%)', '' -replace '( |/|-)', '_' } }, 
         @{name = 'DataType'; expression = { $_.definition.split(' ')[0] } } -Unique | Sort-Object -Property name
 
-        #uncomment the $definitions = below and comment out the current $definitions = if you want to look up the destination table for every write. This might be useful if you keep changing tables around, otherwise you have to import the module every time you make a change.
+
         #$definitions = Invoke-PGSQLSelect -Query "SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema = '$schema' and table_name = '$table'"
-        $definitions = $tabledefinitions | Where-Object { $_.table_schema -ceq $schema -and $_.table_name -ceq $table } | Select-Object column_name,data_type,is_nullable
+        $definitions = $tabledefinitions | Where-Object { $_.table_schema -ceq $schema -and $_.table_name -ceq $table } | Select-Object column_name, data_type, is_nullable
         if (!$definitions) {
             Write-Error "$schema.$table - Does not exist"
             break
@@ -205,7 +274,7 @@ Function Set-PGSQLInsert {
         $selcolumns = @()
         foreach ($column in $comparecolumns) {
             if ($column -in $pgColumns.property) {
-                $column = $pgColumns.where({$_.Property -eq $column})
+                $column = $pgColumns.where({ $_.Property -eq $column })
                 ($column.Property -in $sqlkeywords) ?  ($insertcolumns += '"' + "$($column.Property)" + '"') : ($insertcolumns += $column.Property) | Out-Null
                 $selcolumns += $column.name
             }
@@ -219,8 +288,8 @@ Function Set-PGSQLInsert {
 
         $pgcolumns_string = [System.String]::Join(', ', $insertcolumns)
         $pkeys = ($definitions.Where({ [string]$_.is_nullable -eq 'NO' })).column_name
-        if ($null -eq $pkeys){
-            Write-Error "Primary Keys have not been defined"
+        if ($null -eq $pkeys) {
+            Write-Error 'Primary Keys have not been defined'
             break
         }
         $pkeys_string = [System.String]::Join(',', $pkeys)
@@ -243,15 +312,15 @@ Function Set-PGSQLInsert {
                         "$exc=EXCLUDED.$exc"
                     }
                     $excludedcolumns = [System.String]::Join(',', $excludedcolumns)
-                    $conflictstatement = "on conflict ($pkeys_string) DO UPDATE SET $excludedcolumns"
+                    $conflictstatement = "ON CONFLICT ($pkeys_string) DO UPDATE SET $excludedcolumns"
                 }
                 else {
-                    $conflictstatement = 'on conflict do nothing'
+                    $conflictstatement = 'ON CONFLICT DO NOTHING'
                 }
                 break
             }
             'Do Nothing' {
-                $conflictstatement = 'on conflict do nothing'
+                $conflictstatement = 'ON CONFLICT DO NOTHING'
                 break
             }
             'null' {
@@ -264,7 +333,7 @@ Function Set-PGSQLInsert {
     ($schema -cmatch '[A-Z]') ?  ($insertinto = "`"$($schema)`".$table ($pgcolumns_string)") : ($insertinto = "$($schema).$table ($pgcolumns_string)") | Out-Null
 
         $insertstatement = @"
-    insert into $insertinto
+    INSERT INTO $insertinto
     VALUES $values
     $conflictstatement;
 "@
@@ -280,6 +349,16 @@ Function Set-PGSQLInsert {
     }
 }
 Function Invoke-PGSQLTruncate {
+    <#
+    .SYNOPSIS
+        Truncates a Postgresql table
+    .DESCRIPTION
+        Executes a truncate table query on the specified table
+    .EXAMPLE
+        Invoke-PGSQLTruncate -Schema 'activedirectory' -Table 'computers'
+    #>
+    
+    
     [CmdletBinding()]
     param (
         [Parameter(Mandatory = $true)]
@@ -306,6 +385,16 @@ Function Invoke-PGSQLTruncate {
 }
 
 Function Set-PGSQLTruncate {
+    <#
+    .SYNOPSIS
+        Builds a Postgresql truncate query statement
+    .DESCRIPTION
+        Builds a Postgresql truncate query statement using the specified schema and table
+    .EXAMPLE
+        Set-PGSQLTruncate -Schema 'activedirectory' -Table 'computers'
+    #>
+    
+    
     [CmdletBinding()]
     param (
         [Parameter(Mandatory = $true)]
@@ -323,6 +412,31 @@ Function Set-PGSQLTruncate {
     
 }
 Function Invoke-PGSQLInsert {
+    <#
+    .SYNOPSIS
+        A short one-line action-based description, e.g. 'Tests if a function is valid'
+    .DESCRIPTION
+        A longer description of the function, its purpose, common use cases, etc.
+    .NOTES
+        Information or caveats about the function e.g. 'This function is not supported in Linux'
+    .LINK
+        Specify a URI to a help page, this will show when Get-Help -Online is used.
+    .EXAMPLE
+        # Complete Copy: You want to store an up-to-date copy of your Active Directory computers and want a clean/fresh set of data, truncate the existing table
+
+        Invoke-PGSQLInsert -InputObject $InputObject -OnConflict 'Do Nothing' -Schema 'activedirectory' -Table 'computers' -Truncate $true
+    .EXAMPLE
+        # Time Series Data:  You want to track metrics over time and don't want to truncate the table. By setting -OnConflict to 'Set Excluded', we can update the data in the 'Value' column (assuming the Date and Metric columns are set as primary keys)
+        $InputObject = [PSCustomObject]@{
+                        Date = (Get-date).tostring('yyyy-MM-dd')
+                        'Metric' = 'Total Machines'
+                        'Value' = 12345
+                        }
+
+        Invoke-PGSQLInsert -InputObject $InputObject -OnConflict 'Set Excluded' -Schema 'activedirectory' -Table 'total_machines_history' -Truncate $false
+    #>
+    
+    
     [CmdletBinding()]
     param (
         [Parameter(Mandatory = $true)]
@@ -372,20 +486,107 @@ Function Invoke-PGSQLInsert {
 
 Function Add-PGSQLTable {
 
-    [CmdletBinding()]
+    <#
+    .SYNOPSIS
+        Creates a Postgresql table using a powershell object
+    .DESCRIPTION
+        This function will create a postgresql table based on the input object. A GUI will be displayed where you can choose schema name, table name, primary keys, and columns/data types
+    .NOTES
+        This function replaces certain special characters in property names with "-replace '(\(|\)|\%)', '' -replace '( |/|-)', '_'" and also converts all column names to lower case
+
+        This function assumes you have a group called "readonly" that you use to give select permissions
+
+    CREATE ROLE readonly WITH
+	NOLOGIN
+	NOSUPERUSER
+	NOCREATEDB
+	NOCREATEROLE
+	INHERIT
+	NOREPLICATION
+	NOBYPASSRLS
+	CONNECTION LIMIT -1;
+
+    .EXAMPLE
+        Add-PGSQLTable -InputObject $inputobject
+    .EXAMPLE
+        Add-PGSQLTable -InputObject $inputobject -GrantReadOnly -ReadOnlyGroup 'read_only_users'
+    .EXAMPLE
+        Add-PGSQLTable -InputObject $inputobject -Table 'Computers' -Schema 'ActiveDirectory' -PrimaryKeys @('ObjectGUID')
+    #>
+    
     param (
-        [Parameter(mandatory = $true)]
+        [Parameter(Position = 0, Mandatory = $true)]
         [psobject]
         $InputObject,
-        [bool]
-        $gridview,
+        # Shows PowerShell object in Out-Gridview.
+        [Parameter(HelpMessage = 'Shows PowerShell object in Out-Gridview.')]
         [switch]
-        $dontgrantreadonly
+        $GridView,
+        # Grant permission to specified ReadOnly group.
+        [Parameter(
+            Position = 1,
+            ParameterSetName = 'ReadOnly',
+            Mandatory = $false,
+            HelpMessage = 'Grant permission to specified ReadOnly group.')]
+        [switch]
+        $GrantReadOnly,
+        # ReadOnly group to grant permissions to.
+        [Parameter(
+            Position = 2,
+            ParameterSetName = 'ReadOnly',
+            Mandatory = $false,
+            HelpMessage = 'ReadOnly group to grant permissions to.')
+        ]
+        [string]
+        $ReadOnlyGroup,
+        [string]
+        $Table,
+        [string]
+        $Schema,
+        [array]
+        $PrimaryKeys
     )
+    
     begin {
         Connect-PGSQLServer
+        if (-not $PSBoundParameters.ContainsKey('GrantReadOnly')) {
+            $GrantReadOnly = $false
+        }
+
+        if (-not $PSBoundParameters.ContainsKey('GridView')) {
+            $GridView = $false
+        }
     }
     process {
+        if ($GrantReadOnly -eq $true) {
+            if ($ReadOnlyGroup -eq '') {
+                throw 'ReadOnlyGroup value missing'
+            }
+            elseif ($ReadOnlyGroup -ne '') {
+                $readonlygroup_exists = Invoke-PGSqlQuery -Type Select -Query "select * from pg_group where groname = '$ReadOnlyGroup'"
+                if ($null -eq $readonlygroup_exists) {
+                    $errormessage = @"
+
+Postgresql Group "$ReadOnlyGroup" is missing and needs to be created.
+Create statement:
+
+    CREATE ROLE readonly WITH
+	NOLOGIN
+	NOSUPERUSER
+	NOCREATEDB
+	NOCREATEROLE
+	INHERIT
+	NOREPLICATION
+	NOBYPASSRLS
+	CONNECTION LIMIT -1;
+
+"@
+                    Write-Error -Message $errormessage
+                    break
+                }
+            }
+        }
+
         $definitions = $InputObject[0] | Get-Member | Where-Object { $_.membertype -in ('Property', 'NoteProperty') } | Select-Object @{name = 'Property'; expression = { $_.name.trim() -replace '(\(|\)|\%)', '' -replace '( |/|-)', '_' } }, @{name = 'DataType'; expression = { $_.definition.split(' ')[0] } }
 
         $types = @(
@@ -423,53 +624,56 @@ Function Add-PGSQLTable {
             }
         }
         if ($missingtypes) {
-            Write-Host -ForegroundColor Red 'Your data contains unsupported types'
+            Write-Host -ForegroundColor Red 'Your data contains unsupported types, they may need to be added to $types'
             Write-Host $missingtypes
             break
         }
   
-        if ($gridview -eq $true) {
+        if ($GridView -eq $true) {
             $data | Out-GridView -Wait
             $msg = 'Do you want to continue? [Y/N]'
             $response = Read-Host -Prompt $msg
             if ($response -eq 'n') { break }
         }
 
-        $tabledata = Set-PGTableProperties -object $InputObject
-
+        $tabledata = Set-PGTableProperties -object $InputObject -TableName $Table -SchemaName $Schema -PrimaryKeys $PrimaryKeys
         $fields = $tabledata.Fields
         $pkey = $tabledata.PKey
         $tablename = $tabledata.TableName
         $schemaname = $tabledata.SchemaName
 
+        if ($CancelButtonClicked -eq $true) {
+            throw
+        }
+        if ($pkey.count -lt 1 -or $null -eq $pkey) {
+            Write-Host "WARNING: You didn't select any primary keys" -ForegroundColor Yellow
+        }
 
      
-        if ($fields.count -ge 2) {
+        $keywordspattern = "($($($sqlkeywords -replace '^.{0}','^' -replace '.{0}$','$') -join '|'))"
 
-            $keywordspattern = "($($($sqlkeywords -replace '^.{0}','^' -replace '.{0}$','$') -join '|'))"
+        $pght = @{}
+        $pgfields = $fields | Select-Object @{name = 'Name'; expression = { $_.Name.ToLower() -replace $keywordspattern, '"$1"' } }, Value
+        $pgfields | ForEach-Object { $pght[$_.Name] = $_.value }
 
-            $pght = @{}
-            $pgfields = $fields | Select-Object @{name = 'Name'; expression = { $_.Name.ToLower() -replace $keywordspattern, '"$1"' } }, Value
-            $pgfields | ForEach-Object { $pght[$_.Name] = $_.value }
-
-            $pgdefinitions = $definitions | Select-Object @{name = 'property'; expression = { $_.Property.ToLower() -replace $keywordspattern, '"$1"' } }, datatype
-            $pgdefinitions = $pgdefinitions | Select-Object property, datatype, @{name = 'PGType'; expression = { $pght["$($_.Property)"] } }
-            $pgcolumns = $pgdefinitions | Where-Object { $_.Property -in $pgfields.name }
-            $pkey = $pkey.ToLower() -replace $keywordspattern, '"$1"'
+        $pgdefinitions = $definitions | Select-Object @{name = 'property'; expression = { $_.Property.ToLower() -replace $keywordspattern, '"$1"' } }, datatype
+        $pgdefinitions = $pgdefinitions | Select-Object property, datatype, @{name = 'PGType'; expression = { $pght["$($_.Property)"] } }
+        $pgcolumns = $pgdefinitions | Where-Object { $_.Property -in $pgfields.name }
+        $pkey = $pkey.ToLower() -replace $keywordspattern, '"$1"'
 
 
-            $pkey_value = $pkey -join ','
-            $pkey_name = $tablename + '_pkey'
+        $pkey_value = $pkey -join ','
+        $pkey_name = $tablename + '_pkey'
 
-            $columns = foreach ($column in $pgcolumns) {
+        $columns = foreach ($column in $pgcolumns) {
             ($column.property -in $pkey) ?  "$($column.Property) $($column.PgType) NOT NULL," : "$($column.Property) $($column.PgType),"
-            }
+        }
 
          
-            $createschema = ($schemaname -cmatch '[A-Z]') ?  "`"$schemaname`"" : $schemaname
+        $createschema = ($schemaname -cmatch '[A-Z]') ?  "`"$schemaname`"" : $schemaname
    
         
-            $createtablestatement = @"
+        $createtablestatement = @"
 CREATE TABLE $createschema.$tablename
 (
 $columns
@@ -478,34 +682,29 @@ CONSTRAINT $pkey_name PRIMARY KEY ($($pkey_value))
 "@
 
 
-            $tableexists = Invoke-PGSQLSelect -Query "SELECT * from information_schema.tables WHERE table_schema = '$schemaname' and table_name = '$tablename'" 
+        $tableexists = Invoke-PGSQLSelect -Query "SELECT * from information_schema.tables WHERE table_schema = '$schemaname' and table_name = '$tablename'" 
 
-            if ($tableexists) {
-                Write-Host "$createschema.$tablename - Already Exists" -ForegroundColor Red
-                break
-            }
+        if ($tableexists) {
+            Write-Host "$createschema.$tablename - Already Exists" -ForegroundColor Red
+            break
+        }
 
-            Invoke-PGSQLSelect -Query $createtablestatement
-            Write-Host -Object $createtablestatement -ForegroundColor Blue
+
+
+        Invoke-PGSQLSelect -Query $createtablestatement
+        Write-Host -Object $createtablestatement -ForegroundColor Blue
         
-            $tablecreated = Invoke-PGSQLSelect -Query "SELECT * from information_schema.tables WHERE table_schema = '$schemaname' and table_name = '$tablename'" 
-            if ($tablecreated) {
-                Write-Host "$createschema.$tablename - Created Successfully" -ForegroundColor Green
+        $tablecreated = Invoke-PGSQLSelect -Query "SELECT * from information_schema.tables WHERE table_schema = '$schemaname' and table_name = '$tablename'" 
+        if ($tablecreated) {
+            Write-Host "$createschema.$tablename - Created Successfully" -ForegroundColor Green
         
-                if (!($dontgrantreadonly)) {
-                    Invoke-PGSQLSelect -Query "grant select on $createschema.$tablename to readonly;"
-                    Write-Host "$createschema.$tablename - Granted Select to readonly" -ForegroundColor Green
-                }
+            if ($GrantReadOnly) {
+                Invoke-PGSQLSelect -Query "grant select on $createschema.$tablename to $ReadOnlyGroup;"
+                Write-Host "$createschema.$tablename - Granted Select to `"$ReadOnlyGroup`"" -ForegroundColor Green
             }
         }
-        else {
-            Write-Host 'You selected less than 2 fields' -ForegroundColor red 
-            [void] $objForm.ShowDialog()
-        }
-        if ($pkey.count -lt 1 -or $null -eq $pkey) {
-            Write-Host "You didn't select any primary keys" -ForegroundColor Yellow
-            [void] $objForm.ShowDialog()
-        }
+ 
+
     }
     end {
         Disconnect-PGSQLServer
@@ -513,7 +712,35 @@ CONSTRAINT $pkey_name PRIMARY KEY ($($pkey_value))
     
 }
 
-Function Set-PGTableProperties ($object) {
+
+Function Set-PGTableProperties {
+
+    <#
+.SYNOPSIS
+    Returns Postgresql table properties
+.DESCRIPTION
+    Creates a GUI to select a table name, schema name, primary keys, and columns
+.NOTES
+    Accepts -TableName, -SchemaName, and -Pkeys parameters
+.EXAMPLE
+    Set-PGTableProperties -object $InputObject
+.EXAMPLE
+    Set-PGTableProperties -object $InputObject -TableName $Table -SchemaName $Schema -PKeys $Pkeys
+#>
+
+
+
+    param (
+        [Parameter(Mandatory = $true)]
+        $Object,
+        [string]
+        $TableName,
+        [string]
+        $SchemaName,
+        [array]
+        $PrimaryKeys
+    )
+    $Global:CancelButtonClicked = $false
 
     $properties = $object[0] | Get-Member | Where-Object { $_.membertype -in ('Property', 'NoteProperty') } | Select-Object @{name = 'Property'; expression = { $_.name.trim() -replace '(\(|\)|\%)', '' -replace '( |/|-)', '_' } }, @{name = 'DataType'; expression = { $_.definition.split(' ')[0] } }
 
@@ -522,7 +749,7 @@ Function Set-PGTableProperties ($object) {
     [void] [System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms') 
 
     #This creates the form and sets its size and position
-    $objForm = New-Object System.Windows.Forms.Form 
+    $global:objForm = New-Object System.Windows.Forms.Form 
     $objForm.Text = 'Postgres Table Builder'
     $objForm.Size = New-Object System.Drawing.Size(1000, 800) 
     #$objForm.AutoSize = $true
@@ -548,7 +775,11 @@ Function Set-PGTableProperties ($object) {
     $objTextBox1.Location = New-Object System.Drawing.Size(10, 40) 
     $objTextBox1.Size = New-Object System.Drawing.Size(260, 20)
     $objTextBox1.TabIndex = 0 
+    if ($PSBoundParameters['TableName']) { $objTextBox1.Text = $TableName }
     $objForm.Controls.Add($objTextBox1)
+    
+    
+    
 
     #This creates a label for the TextBox2
     $objLabel2 = New-Object System.Windows.Forms.Label
@@ -569,9 +800,10 @@ Function Set-PGTableProperties ($object) {
     $objTextBox2.TabIndex = 0 
     $objForm.Controls.Add($objTextBox2)
     $schemas = (Invoke-PGSQLSelect -Query "SELECT distinct schema_name from information_schema.schemata where schema_name not like '%timescaledb_%'").schema_name | Sort-Object
-    Foreach ($schema in $schemas) {
-        [void] $objTextBox2.Items.Add($schema)
-    } 
+    Foreach ($schema_name in $schemas) {
+        [void] $objTextBox2.Items.Add($schema_name)
+    }
+    if ($PSBoundParameters['SchemaName']) { $objTextBox2.SelectedItem = $SchemaName }
 
     #This creates a label for the ListBox1
     $listbox1label = New-Object System.Windows.Forms.Label
@@ -603,8 +835,14 @@ Function Set-PGTableProperties ($object) {
     $objForm.Controls.Add($listbox2)
  
     Foreach ($property in $properties.property) {
-        [void] $listbox2.Items.Add($property)
-    }    
+        if ($property -in $PrimaryKeys) {
+            [void] $listbox2.Items.Add($property, [System.Windows.Forms.CheckState]::Checked)
+        }
+        else { 
+            [void] $listbox2.Items.Add($property) 
+        }
+    }
+       
  
     #This creates the Ok button and sets the event
     $OKButton = New-Object System.Windows.Forms.Button
@@ -622,8 +860,9 @@ Function Set-PGTableProperties ($object) {
     $CancelButton.Location = New-Object System.Drawing.Size(200, 700)
     $CancelButton.Size = New-Object System.Drawing.Size(75, 23)
     $CancelButton.Text = 'Cancel'
-    $CancelButton.Add_Click( { $objForm.Close() })
+    $CancelButton.Add_Click( { $global:CancelButtonClicked = $true; $objForm.Close() })
     $CancelButton.TabIndex = 0
+    $CancelButton.DialogResult = [System.Windows.Forms.DialogResult]::Cancel 
     $objForm.Controls.Add($CancelButton)
     $objForm.Add_Shown( { $objForm.Activate() })
     $objForm.CancelButton = $CancelButton
@@ -729,6 +968,11 @@ Function Set-PGTableProperties ($object) {
 
     [void] $objForm.ShowDialog()
 
+    if ($CancelButtonClicked -eq $true) {
+        Write-Host 'Table creation cancelled.'
+        exit
+    }
+
     $fields = @()
     foreach ($row in $dgv.SelectedRows) {
         $fields += [PSCustomObject]@{
@@ -738,20 +982,36 @@ Function Set-PGTableProperties ($object) {
     }
 
     $pkey = $listbox2.CheckedItems
-    $tablename = $objTextBox1.Text
-    $schemaname = $objTextBox2.SelectedItem
+    $table_name = $objTextBox1.Text
+    $schema_name = $objTextBox2.SelectedItem
 
     $table = [PSCustomObject]@{
-        Fields     = $fields
-        PKey       = $pkey
-        TableName  = $tablename
-        SchemaName = $schemaname
+        'Fields'     = $fields
+        'PKey'       = $pkey
+        'TableName'  = $table_name
+        'SchemaName' = $schema_name
     }
 
     return $table
 }
 
 Function Write-PGSQLLog {
+
+    <#
+.SYNOPSIS
+    Writes a log to a Postgresql DB
+.DESCRIPTION
+    Writes a log in a format similar to CMTrace to public.powershell_log, useful for tracking scripts and an alternative to using Transcript
+.EXAMPLE
+
+    Write an informational log from the current function
+
+    Write-PGSQLLog -Log $PSCommandPath.Split('\')[-1] -Component $MyInvocation.MyCommand -Value "$((Get-Variable MyInvocation -Scope 1).Value.MyCommand.Name)" -Severity 1 -Schedule $Schedule
+    
+#>
+
+
+
     [CmdletBinding()]
     Param( 
 
@@ -796,7 +1056,7 @@ Function Write-PGSQLLog {
             pid       = $pid
             schedule  = $schedule
         }
-        Invoke-PGSqlQuery -Type Insert -InputObject $record -OnConflict 'Do Nothing' -Schema 'public' -Table 'script_log' -Truncate $false
+        Invoke-PGSqlQuery -Type Insert -InputObject $record -OnConflict 'Do Nothing' -Schema 'public' -Table 'powershell_log' -Truncate $false
     }
     end {
         Disconnect-PGSQLServer
