@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param (
     [Parameter(Mandatory=$false)]
-    [ValidateSet('15Minute', 'Hourly', 'Daily','Skip')]
+    [ValidateSet('15Minute', 'Hourly', 'Daily')]
     [string]
     $Schedule
 )
