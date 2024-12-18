@@ -3,6 +3,9 @@ A collection of PowerShell modules for extracting data from various sources.
 
 # Getting Started
 
+## PowerShell Version
+- Must be running PowerShell 7
+
 ## 3rd Party Modules and Binaries
 - 3rd Party Modules are required for most of the functions. They must be installed before attempting to load other modules. (See 3rdPartyModules.ps1)
 - Dll's and executables are required for a few functions:
