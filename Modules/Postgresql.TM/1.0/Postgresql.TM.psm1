@@ -96,7 +96,10 @@ Function Test-PGODBCDriver {
 
 
 Function Get-PGSQLTableDefinitions {
-
+    param(
+        [switch]
+        $Force
+    )
     <#
     .SYNOPSIS
         Retrieves all column information from DB
@@ -105,7 +108,7 @@ Function Get-PGSQLTableDefinitions {
     .NOTES
         This function exists to reduce the amount of queries done against the DB. By storing the table definitions in a variable, we can reference this in memory instead of querying the DB before each insert.
     #>
-    if ($null -eq $tabledefinitions) {
+    if ($null -eq $tabledefinitions[0] -or $Force) {
 
         $query = @'
     SELECT table_schema,table_name,column_name,data_type,is_nullable
@@ -707,6 +710,7 @@ CONSTRAINT $pkey_name PRIMARY KEY ($($pkey_value))
 
     }
     end {
+        Get-PGSQLTableDefinitions -Force
         Disconnect-PGSQLServer
     }
     
