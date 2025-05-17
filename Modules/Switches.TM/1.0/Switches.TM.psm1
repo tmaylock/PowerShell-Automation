@@ -452,74 +452,74 @@ switches.portdescriptions - Granted Select to readonly
     
     
         $CDPCapabilitiesProperties = @(
-            @{name = 'ifindex'; expression = { ($_.oid).split('.')[-2] } },
-            @{name = 'neighborindex'; expression = { ($_.oid).split('.')[-1] } },
+            @{name = 'ifindex'; expression = { [int]($_.oid).split('.')[-2] } },
+            @{name = 'neighborindex'; expression = { [int]($_.oid).split('.')[-1] } },
             @{name = 'data'; expression = { '{' + ((ConvertFrom-CDPCapabilityBits -CapabilitiesHex $_.data) -join ',') + '}' } },
             @{name = 'ip'; expression = { [ipaddress]"$IP" } }  
         )
         
     
         $CDPIPProperties = @(
-            @{name = 'ifindex'; expression = { ($_.oid).split('.')[-2] } },
-            @{name = 'neighborindex'; expression = { ($_.oid).split('.')[-1] } },
+            @{name = 'ifindex'; expression = { [int]($_.oid).split('.')[-2] } },
+            @{name = 'neighborindex'; expression = { [int]($_.oid).split('.')[-1] } },
             @{name = 'data'; expression = { ConvertFrom-CDPIPHex -IPHEX $_.data } }, 
             @{name = 'ip'; expression = { [ipaddress]"$IP" } } 
         )
     
         $CDPDefaultProperties = @(
-            @{name = 'ifindex'; expression = { ($_.oid).split('.')[-2] } },
-            @{name = 'neighborindex'; expression = { ($_.oid).split('.')[-1] } },
+            @{name = 'ifindex'; expression = { [int]($_.oid).split('.')[-2] } },
+            @{name = 'neighborindex'; expression = { [int]($_.oid).split('.')[-1] } },
             'data', 
             @{name = 'ip'; expression = { [ipaddress]"$IP" } } 
         )
     
         $IPIndexProperties = @(
-            @{name = 'ifindex'; expression = { $_.data } }, 
-            @{name = 'data'; expression = { $_.OID.Replace("$($SNMPMappings.item("$DataType").OID).", '') } }, 
+            @{name = 'ifindex'; expression = { [int]$_.data } }, 
+            @{name = 'data'; expression = { [ipaddress]$_.OID.Replace("$($SNMPMappings.item("$DataType").OID).", '') } }, 
             @{name = 'ip'; expression = { [ipaddress]"$IP" } } 
         )
     
     
         $IPNetMaskProperties = @(
-            @{name = 'ifindex'; expression = { $_.OID.Replace("$($SNMPMappings.item("$DataType").OID).", '') } }, 
-            'data', 
+            @{name = 'ifindex'; expression = { [ipaddress]$_.OID.Replace("$($SNMPMappings.item("$DataType").OID).", '') } }, 
+            @{Name='data';Expression={[ipaddress]$_.data}}
             @{name = 'ip'; expression = { [ipaddress]"$IP" } } 
         )
     
         $PortDefaultProperties = @(
-            @{name = 'ifindex'; expression = { $_.OID.Split('.')[-1] } }, 
+            @{name = 'ifindex'; expression = { [int]$_.OID.Split('.')[-1] } }, 
             'data', 
             @{name = 'ip'; expression = { [ipaddress]"$IP" } } 
         )
     
         $LLDPProperties = @(
-            @{name = 'ifindex'; expression = { ($_.oid).split('.')[-2] } },
-            @{name = 'neighborindex'; expression = { ($_.oid).split('.')[-1] } },
+            @{name = 'ifindex'; expression = { [int]($_.oid).split('.')[-2] } },
+            @{name = 'neighborindex'; expression = { [int]($_.oid).split('.')[-1] } },
             @{Name = 'data'; Expression = { if ($_.data -match '.*\?.*') { [String]::Join('', ([System.Text.Encoding]::ASCII.GetBytes($_.data) | ForEach-Object { '{0:X2}' -f $_ })) } else { $_.data -replace '[^\x21-\x7e]+', '' } } }, 
             @{name = 'ip'; expression = { [ipaddress]"$IP" } } 
         )
     
         $LLDPHexProperties = @(
-            @{name = 'ifindex'; expression = { ($_.oid).split('.')[-2] } },
-            @{name = 'neighborindex'; expression = { ($_.oid).split('.')[-1] } },    
+            @{name = 'ifindex'; expression = { [int]($_.oid).split('.')[-2] } },
+            @{name = 'neighborindex'; expression = { [int]($_.oid).split('.')[-1] } },    
             @{name = 'data'; expression = { '{' + ((ConvertFrom-LLDPCapability -ClientIntentValue ('0x' + $_.data.SubString(0, 2))) -join ',') + '}' } }, 
             @{name = 'ip'; expression = { [ipaddress]"$IP" } } 
         )
             
         $entPhysicalClassProperties = @(
-            @{name = 'ifindex'; expression = { $_.OID.Split('.')[-1] } }, 
+            @{name = 'ifindex'; expression = { [int]$_.OID.Split('.')[-1] } }, 
             @{name = 'data'; expression = { ConvertFrom-EntityClass -entityclass $_.data } }, 
             @{name = 'ip'; expression = { [ipaddress]"$IP" } } 
         )
     
         $entAliasMappingIdentifierProperties = @(
-            @{name = 'ifindex'; expression = { ($_.oid).split('.')[-2] } },
+            @{name = 'ifindex'; expression = { [int]($_.oid).split('.')[-2] } },
             @{Name = 'data'; Expression = { $_.data.split('.')[-1] } } , 
             @{name = 'ip'; expression = { [ipaddress]"$IP" } } 
         )
     
         $VLANDefaultProperties = @(
-            @{name = 'vlanindex'; expression = { $_.OID.Split('.')[-1] } }, 
+            @{name = 'vlanindex'; expression = { [int]$_.OID.Split('.')[-1] } }, 
             'data', 
             @{name = 'ip'; expression = { [ipaddress]"$IP" } } 
         )
